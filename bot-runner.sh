@@ -137,22 +137,12 @@ while true; do
   auto_accept_trust &
   TRUST_PID=$!
 
-  # Use --continue to resume the last session in this workdir.
-  # Each bot has its own workdir, so --continue always finds the right session.
-  # First run: no session exists, --continue fails → start fresh.
-  echo -e "${GREEN}[bot-runner] claude --continue $CLAUDE_ARGS (workdir: $BOT_WORKDIR)${NC}"
-  claude --continue $CLAUDE_ARGS
+  # Always start fresh — --continue with --channels causes stale plugin state
+  # (MCP server marked as failed from previous session) and duplicate bun processes.
+  # Each bot's workdir is isolated, so no valuable conversation state is lost.
+  echo -e "${GREEN}[bot-runner] claude $CLAUDE_ARGS (workdir: $BOT_WORKDIR)${NC}"
+  claude $CLAUDE_ARGS
   EXIT_CODE=$?
-
-  if [ $EXIT_CODE -eq 1 ] && [ $RESTART_COUNT -le 2 ]; then
-    # --continue failed (no previous session). Start fresh.
-    echo -e "${YELLOW}[bot-runner] No previous session, starting fresh...${NC}"
-    auto_accept_trust &
-    TRUST_PID2=$!
-    claude $CLAUDE_ARGS
-    EXIT_CODE=$?
-    kill $TRUST_PID2 2>/dev/null
-  fi
 
   # Clean up trust accepter
   kill $TRUST_PID 2>/dev/null

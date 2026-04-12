@@ -1,0 +1,34 @@
+{
+  "group_id": "<YOUR_GROUP_ID>",
+  "group_name": "西神-长老院",
+  "bots": {
+    "orchestrator": {
+      "label": "西神·主持",
+      "username": "Orchestrator_Casi_God_bot",
+      "token": "<YOUR_TOKEN>",
+      "tmux_session": "bot-orchestrator",
+      "role": "moderator"
+    },
+    "engineer": {
+      "label": "西神·工程师",
+      "username": "Engineer_Casi_God_bot",
+      "token": "<YOUR_TOKEN>",
+      "tmux_session": "bot-engineer",
+      "role": "expert"
+    },
+    "product": {
+      "label": "西神·产品前端",
+      "username": "Product_Casi_God_bot",
+      "token": "<YOUR_TOKEN>",
+      "tmux_session": "bot-product",
+      "role": "expert"
+    },
+    "critic": {
+      "label": "西神·批判者",
+      "username": "Critic_Casi_God_bot",
+      "token": "<YOUR_TOKEN>",
+      "tmux_session": "bot-critic",
+      "role": "expert"
+    }
+  }
+}
