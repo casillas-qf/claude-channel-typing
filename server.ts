@@ -850,10 +850,21 @@ bot.on('callback_query:data', async ctx => {
     return
   }
 
-  void mcp.notification({
-    method: 'notifications/claude/channel/permission',
-    params: { request_id, behavior },
-  })
+  // Send permission response to CC with retry for reliability.
+  let sent = false
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      await mcp.notification({
+        method: 'notifications/claude/channel/permission',
+        params: { request_id, behavior },
+      })
+      sent = true
+      break
+    } catch (err) {
+      process.stderr.write(`permission notification attempt ${attempt + 1} failed: ${err}\n`)
+      if (attempt < 2) await new Promise(r => setTimeout(r, 500))
+    }
+  }
   pendingPermissions.delete(request_id)
   // Stop retry timer for this permission request
   const retryTimer = permissionRetryTimers.get(request_id)
@@ -862,12 +873,13 @@ bot.on('callback_query:data', async ctx => {
     permissionRetryTimers.delete(request_id)
   }
   const label = behavior === 'allow' ? '✅ Allowed' : '❌ Denied'
-  await ctx.answerCallbackQuery({ text: label }).catch(() => {})
+  const status = sent ? label : `${label} (⚠️ failed to reach CLI — try allowing in terminal)`
+  await ctx.answerCallbackQuery({ text: status }).catch(() => {})
   // Replace buttons with the outcome so the same request can't be answered
   // twice and the chat history shows what was chosen.
   const msg = ctx.callbackQuery.message
   if (msg && 'text' in msg && msg.text) {
-    await ctx.editMessageText(`${msg.text}\n\n${label}`).catch(() => {})
+    await ctx.editMessageText(`${msg.text}\n\n${status}`).catch(() => {})
   }
 })
 
@@ -1014,13 +1026,21 @@ async function handleInbound(
   const permMatch = PERMISSION_REPLY_RE.exec(text)
   if (permMatch) {
     const permReqId = permMatch[2]!.toLowerCase()
-    void mcp.notification({
-      method: 'notifications/claude/channel/permission',
-      params: {
-        request_id: permReqId,
-        behavior: permMatch[1]!.toLowerCase().startsWith('y') ? 'allow' : 'deny',
-      },
-    })
+    const permBehavior = permMatch[1]!.toLowerCase().startsWith('y') ? 'allow' : 'deny'
+    let permSent = false
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        await mcp.notification({
+          method: 'notifications/claude/channel/permission',
+          params: { request_id: permReqId, behavior: permBehavior },
+        })
+        permSent = true
+        break
+      } catch (err) {
+        process.stderr.write(`permission text-reply attempt ${attempt + 1} failed: ${err}\n`)
+        if (attempt < 2) await new Promise(r => setTimeout(r, 500))
+      }
+    }
     pendingPermissions.delete(permReqId)
     const permRetry = permissionRetryTimers.get(permReqId)
     if (permRetry) {
@@ -1028,10 +1048,15 @@ async function handleInbound(
       permissionRetryTimers.delete(permReqId)
     }
     if (msgId != null) {
-      const emoji = permMatch[1]!.toLowerCase().startsWith('y') ? '✅' : '❌'
+      const emoji = permSent
+        ? (permBehavior === 'allow' ? '✅' : '❌')
+        : '⚠️'
       void bot.api.setMessageReaction(chat_id, msgId, [
         { type: 'emoji', emoji: emoji as ReactionTypeEmoji['emoji'] },
       ]).catch(() => {})
+    }
+    if (!permSent) {
+      void bot.api.sendMessage(chat_id, '⚠️ Failed to send permission response to CLI. Try allowing in terminal.').catch(() => {})
     }
     return
   }
