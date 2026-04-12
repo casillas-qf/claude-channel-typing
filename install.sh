@@ -301,6 +301,18 @@ if [ "$1" = "--setup-aliases" ]; then
   exit 0
 fi
 
+if [ "$1" = "--setup-group" ]; then
+  # Delegate to the discussion group setup script
+  if [ -f "$SCRIPT_DIR/setup-discussion-group.sh" ]; then
+    shift
+    bash "$SCRIPT_DIR/setup-discussion-group.sh" "$@"
+  else
+    echo "ERROR: setup-discussion-group.sh not found in $SCRIPT_DIR"
+    exit 1
+  fi
+  exit 0
+fi
+
 if [ "$1" = "--install-runner" ]; then
   install_runner
   exit 0

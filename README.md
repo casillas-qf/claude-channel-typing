@@ -141,6 +141,76 @@ tmux new-session -d -s bot-work 'bash ~/.claude/bot-manager/bot-runner.sh work'
     └── inbox/
 ```
 
+## 多 Agent 群聊讨论系统
+
+支持多个 bot 在 Telegram 群里协作讨论和执行任务。
+
+### 角色配置
+
+| 角色 | 类型 | 行为 |
+|------|------|------|
+| 西神·主持（orchestrator） | moderator | 响应群里所有用户消息，不需要 @mention |
+| 西神·工程师（engineer） | expert | 只在被 @mention 时响应，其余消息作为上下文 |
+| 西神·产品前端（product） | expert | 同上，延迟 60s 响应（等其他人先说） |
+| 西神·批判者（critic） | expert | 同上，延迟 90s 响应 |
+
+### 快速开始
+
+```bash
+# 1. 配置 bot token（交互式）
+bash setup-discussion-group.sh --tokens
+
+# 2. 创建 Telegram 群，把所有 bot 拉进去
+
+# 3. 配置群组 ID
+bash setup-discussion-group.sh --group-id -100XXXXXXXXXX
+
+# 4. 启动所有 bot
+bash setup-discussion-group.sh --start
+
+# 5. 在每个 bot 的 CLI 里配对
+#    /telegram:access pair <code>
+#    /telegram:access policy allowlist
+```
+
+### 工作流程
+
+```
+你在群里发消息 → 主持人拆解课题 → @各专家分配任务
+→ 专家依次响应（有延迟，不会撞车）
+→ 专家之间可以互相 @辩论
+→ 主持人汇总结论
+→ 确认后可进入执行模式（各自在 git 分支开发）
+```
+
+### access.json 群组配置示例
+
+```json
+{
+  "groups": {
+    "-100123456789": {
+      "requireMention": false,
+      "allowFrom": [],
+      "role": "moderator"
+    }
+  }
+}
+```
+
+expert 角色配置：
+```json
+{
+  "groups": {
+    "-100123456789": {
+      "requireMention": true,
+      "allowFrom": [],
+      "role": "expert",
+      "discussionDelay": 30
+    }
+  }
+}
+```
+
 ## 故障排查
 
 | 问题 | 原因 | 解决 |
