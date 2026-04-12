@@ -10,6 +10,9 @@ set -e
 #   bash install.sh                           # install core + interactive bot setup
 #   bash install.sh --add-bot NAME TOKEN      # add a named bot
 #   bash install.sh --add-bot work 123:AAH... # example
+#   bash install.sh --setup-aliases           # auto-generate aliases for all configured bots
+#   bash install.sh --install-runner          # install bot-runner.sh for auto-restart
+#   bash install.sh --full-setup              # full install + aliases + runner (one-click for new machines)
 # ============================================================
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -171,6 +174,83 @@ LAUNCH
   echo "  Created: $CUSTOM_DIR/launch.sh"
 }
 
+setup_aliases() {
+  echo "[aliases] Setting up shell aliases for all configured bots..."
+  # Detect shell rc file
+  local rc_file=""
+  if [ -f "$HOME/.zshrc" ]; then
+    rc_file="$HOME/.zshrc"
+  elif [ -f "$HOME/.bashrc" ]; then
+    rc_file="$HOME/.bashrc"
+  else
+    rc_file="$HOME/.bashrc"
+    touch "$rc_file"
+  fi
+
+  local added=0
+  local marker="# claude-channel-typing aliases"
+
+  # Remove old alias block if exists (between markers)
+  if grep -q "$marker" "$rc_file" 2>/dev/null; then
+    sed -i.bak "/$marker BEGIN/,/$marker END/d" "$rc_file"
+    rm -f "${rc_file}.bak"
+    echo "  Removed old alias block."
+  fi
+
+  # Collect all bot names
+  local bot_names=()
+  for d in "$HOME/.claude/channels/telegram-"*/; do
+    if [ -f "$d/.env" ]; then
+      local name
+      name=$(basename "$d" | sed 's/telegram-//')
+      bot_names+=("$name")
+    fi
+  done
+
+  if [ ${#bot_names[@]} -eq 0 ]; then
+    echo "  No bots found in ~/.claude/channels/telegram-*/. Nothing to do."
+    return
+  fi
+
+  # Write alias block
+  {
+    echo ""
+    echo "$marker BEGIN"
+    for name in "${bot_names[@]}"; do
+      local alias_name="claude-${name}"
+      echo "alias ${alias_name}=\"bash ~/.claude/plugins/custom/telegram-typing/launch.sh ${name}\""
+      added=$((added + 1))
+    done
+    echo "$marker END"
+  } >> "$rc_file"
+
+  echo "  Added $added alias(es) to $rc_file:"
+  for name in "${bot_names[@]}"; do
+    echo "    claude-${name} → launch.sh ${name}"
+  done
+  echo "  Run: source $rc_file"
+}
+
+install_runner() {
+  echo "[runner] Installing bot-runner.sh..."
+  local runner_dir="$HOME/.claude/bot-manager"
+  mkdir -p "$runner_dir"
+  if [ -f "$SCRIPT_DIR/bot-runner.sh" ]; then
+    cp "$SCRIPT_DIR/bot-runner.sh" "$runner_dir/bot-runner.sh"
+    chmod +x "$runner_dir/bot-runner.sh"
+    echo "  Installed: $runner_dir/bot-runner.sh"
+    echo ""
+    echo "  Usage (run inside tmux):"
+    echo "    bash ~/.claude/bot-manager/bot-runner.sh <bot-name>"
+    echo ""
+    echo "  Example with tmux:"
+    echo "    tmux new-session -d -s bot-work 'bash ~/.claude/bot-manager/bot-runner.sh work'"
+  else
+    echo "  ERROR: bot-runner.sh not found in $SCRIPT_DIR"
+    return 1
+  fi
+}
+
 list_bots() {
   echo ""
   echo "Configured bots:"
@@ -201,7 +281,7 @@ list_bots() {
 echo "=== Telegram Typing Heartbeat Plugin ==="
 echo ""
 
-# Handle --add-bot mode
+# Handle subcommands
 if [ "$1" = "--add-bot" ]; then
   if [ -z "$2" ] || [ -z "$3" ]; then
     echo "Usage: bash install.sh --add-bot NAME TOKEN"
@@ -213,6 +293,36 @@ if [ "$1" = "--add-bot" ]; then
   fi
   add_bot "$2" "$3"
   list_bots
+  exit 0
+fi
+
+if [ "$1" = "--setup-aliases" ]; then
+  setup_aliases
+  exit 0
+fi
+
+if [ "$1" = "--install-runner" ]; then
+  install_runner
+  exit 0
+fi
+
+if [ "$1" = "--full-setup" ]; then
+  # Full install + aliases + runner — one command for new machines
+  check_prereqs
+  echo ""
+  patch_plugin
+  echo ""
+  configure_permissions
+  echo ""
+  create_launcher
+  echo ""
+  install_runner
+  echo ""
+  setup_aliases
+  echo ""
+  list_bots
+  echo ""
+  echo "=== Full setup complete ==="
   exit 0
 fi
 

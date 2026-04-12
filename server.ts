@@ -447,6 +447,14 @@ mcp.setNotificationHandler(
   }),
   async ({ params }) => {
     const { request_id, tool_name, description, input_preview } = params
+    // A new permission_request means CC moved past any previous ones — clear stale reminders.
+    for (const [oldId, timer] of permissionRetryTimers) {
+      if (oldId !== request_id) {
+        clearTimeout(timer)
+        permissionRetryTimers.delete(oldId)
+        pendingPermissions.delete(oldId)
+      }
+    }
     pendingPermissions.set(request_id, { tool_name, description, input_preview })
     const access = loadAccess()
     const text = `🔐 Permission: ${tool_name}`
@@ -459,26 +467,36 @@ mcp.setNotificationHandler(
         process.stderr.write(`permission_request send to ${chat_id} failed: ${e}\n`)
       })
     }
-    // Retry: resend permission request every 10s until answered (max 5 min).
+    // Retry: first reminder at 45s, then every 60s (max 5 reminders).
+    // Long intervals avoid spamming when the user already allowed via CLI
+    // (CC needs time to think + execute before a tool call clears the state).
     let retryCount = 0
-    const maxRetries = 30 // 30 * 10s = 5 min
-    const retryInterval = setInterval(() => {
-      retryCount++
-      if (!pendingPermissions.has(request_id) || retryCount >= maxRetries) {
-        clearInterval(retryInterval)
-        permissionRetryTimers.delete(request_id)
-        return
-      }
-      const retryText = `🔐 [Reminder #${retryCount}] Permission: ${tool_name}`
-      const retryAccess = loadAccess()
-      for (const chat_id of retryAccess.allowFrom) {
-        void bot.api.sendMessage(chat_id, retryText, { reply_markup: keyboard }).catch(e => {
-          process.stderr.write(`permission_request retry to ${chat_id} failed: ${e}\n`)
-        })
-      }
-    }, 10000)
-    retryInterval.unref()
-    permissionRetryTimers.set(request_id, retryInterval)
+    const maxRetries = 5
+    const firstDelay = 45000
+    const subsequentDelay = 60000
+    const scheduleRetry = () => {
+      const delay = retryCount === 0 ? firstDelay : subsequentDelay
+      const retryTimeout = setTimeout(() => {
+        retryCount++
+        if (!pendingPermissions.has(request_id) || retryCount > maxRetries) {
+          permissionRetryTimers.delete(request_id)
+          return
+        }
+        const retryText = `🔐 [Reminder #${retryCount}] Permission: ${tool_name}`
+        const retryAccess = loadAccess()
+        for (const chat_id of retryAccess.allowFrom) {
+          void bot.api.sendMessage(chat_id, retryText, { reply_markup: keyboard }).catch(e => {
+            process.stderr.write(`permission_request retry to ${chat_id} failed: ${e}\n`)
+          })
+        }
+        if (retryCount < maxRetries && pendingPermissions.has(request_id)) {
+          scheduleRetry()
+        }
+      }, delay)
+      retryTimeout.unref()
+      permissionRetryTimers.set(request_id, retryTimeout)
+    }
+    scheduleRetry()
   },
 )
 
@@ -557,6 +575,15 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
 }))
 
 mcp.setRequestHandler(CallToolRequestSchema, async req => {
+  // A tool call arriving means CC has moved past any pending permission gate
+  // (user may have allowed from the CLI terminal). Clear all pending reminders.
+  if (pendingPermissions.size > 0) {
+    for (const [id, timer] of permissionRetryTimers) {
+      clearTimeout(timer)
+    }
+    permissionRetryTimers.clear()
+    pendingPermissions.clear()
+  }
   const args = (req.params.arguments ?? {}) as Record<string, unknown>
   try {
     switch (req.params.name) {
@@ -831,7 +858,7 @@ bot.on('callback_query:data', async ctx => {
   // Stop retry timer for this permission request
   const retryTimer = permissionRetryTimers.get(request_id)
   if (retryTimer) {
-    clearInterval(retryTimer)
+    clearTimeout(retryTimer)
     permissionRetryTimers.delete(request_id)
   }
   const label = behavior === 'allow' ? '✅ Allowed' : '❌ Denied'
@@ -997,7 +1024,7 @@ async function handleInbound(
     pendingPermissions.delete(permReqId)
     const permRetry = permissionRetryTimers.get(permReqId)
     if (permRetry) {
-      clearInterval(permRetry)
+      clearTimeout(permRetry)
       permissionRetryTimers.delete(permReqId)
     }
     if (msgId != null) {

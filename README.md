@@ -54,6 +54,19 @@ bash install.sh --add-bot work 123456789:AAH...
 bash install.sh --add-bot personal 987654321:BBX...
 ```
 
+### 第四步（可选）：一键生成 alias + 安装自动重启
+
+```bash
+bash install.sh --setup-aliases    # 扫描已有 bots，自动写入 bashrc/zshrc
+bash install.sh --install-runner   # 安装 bot-runner.sh（带自动重启）
+```
+
+或者用 `--full-setup` 一步到位（适合新机器）：
+
+```bash
+bash install.sh --full-setup
+```
+
 ## 日常使用
 
 ### 启动 bot
@@ -79,14 +92,23 @@ bash ~/.claude/plugins/custom/telegram-typing/launch.sh work
 bash ~/.claude/plugins/custom/telegram-typing/launch.sh personal
 ```
 
-### 建议加 alias
+### 自动生成 alias
 
 ```bash
-cat >> ~/.zshrc <<'EOF'
-alias claude-work="bash ~/.claude/plugins/custom/telegram-typing/launch.sh work"
-alias claude-personal="bash ~/.claude/plugins/custom/telegram-typing/launch.sh personal"
-EOF
-source ~/.zshrc
+bash install.sh --setup-aliases
+```
+
+自动扫描 `~/.claude/channels/telegram-*/`，为每个 bot 生成 `claude-<name>` alias 并写入 bashrc/zshrc。
+
+### 带自动重启的 bot-runner
+
+安装后在 tmux 里运行，崩溃自动重启：
+
+```bash
+bash install.sh --install-runner
+
+# 然后：
+tmux new-session -d -s bot-work 'bash ~/.claude/bot-manager/bot-runner.sh work'
 ```
 
 ## Bot Token 获取
