@@ -159,11 +159,9 @@ while true; do
 
   echo -e "${YELLOW}[bot-runner] Claude exited with code $EXIT_CODE${NC}"
 
-  # Kill any orphaned MCP plugin processes left behind by the exited claude session.
-  # These are bun/node children that didn't exit when claude stopped.
-  echo -e "${YELLOW}[bot-runner] Killing stale MCP processes...${NC}"
-  pkill -f "bun.*server.ts" -P 1 2>/dev/null  # orphaned bun (PPID=1)
-  pkill -f "notebooklm-mcp" -P 1 2>/dev/null  # orphaned notebooklm
+  # Note: orphaned MCP processes (PPID=1) are handled by the orphan watchdog
+  # in server.ts (process.kill(bootPpid, 0) check). Don't pkill here as it
+  # can race with other sessions' still-valid processes.
 
   echo -e "${YELLOW}[bot-runner] Restarting in 5 seconds...${NC}"
   sleep 5
