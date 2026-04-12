@@ -109,6 +109,19 @@ echo -e "${GREEN}============================================${NC}"
 
 export TELEGRAM_STATE_DIR="$STATE_DIR"
 
+# Cleanup: kill all child processes (MCP plugins, bun, node) when bot-runner exits
+cleanup_children() {
+  echo -e "${YELLOW}[bot-runner] Cleaning up child processes...${NC}"
+  # Kill entire process group — catches all descendants
+  pkill -P $$ 2>/dev/null
+  # Also kill any orphaned bun/node processes from our claude sessions
+  # by checking if their TELEGRAM_STATE_DIR matches ours
+  sleep 1
+  pkill -P $$ 2>/dev/null  # second pass for stragglers
+  echo -e "${GREEN}[bot-runner] Cleanup complete.${NC}"
+}
+trap cleanup_children EXIT SIGTERM SIGINT SIGHUP
+
 while true; do
   RESTART_COUNT=$((RESTART_COUNT + 1))
   check_rapid_restart
@@ -145,6 +158,13 @@ while true; do
   kill $TRUST_PID 2>/dev/null
 
   echo -e "${YELLOW}[bot-runner] Claude exited with code $EXIT_CODE${NC}"
+
+  # Kill any orphaned MCP plugin processes left behind by the exited claude session.
+  # These are bun/node children that didn't exit when claude stopped.
+  echo -e "${YELLOW}[bot-runner] Killing stale MCP processes...${NC}"
+  pkill -f "bun.*server.ts" -P 1 2>/dev/null  # orphaned bun (PPID=1)
+  pkill -f "notebooklm-mcp" -P 1 2>/dev/null  # orphaned notebooklm
+
   echo -e "${YELLOW}[bot-runner] Restarting in 5 seconds...${NC}"
   sleep 5
 done

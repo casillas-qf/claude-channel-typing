@@ -766,15 +766,27 @@ process.on('SIGINT', shutdown)
 process.on('SIGHUP', shutdown)
 
 // Orphan watchdog: stdin events above don't reliably fire when the parent
-// chain (`bun run` wrapper → shell → us) is severed by a crash. Poll for
-// reparenting (POSIX) or a dead stdin pipe and self-terminate.
+// chain (`bun run` wrapper → shell → us) is severed by a crash.
+// process.ppid is static in bun/node (never updates on reparenting), so we
+// actively probe the original parent with kill(pid, 0) instead.
 const bootPpid = process.ppid
 setInterval(() => {
+  let parentAlive = true
+  if (process.platform !== 'win32' && bootPpid > 1) {
+    try {
+      process.kill(bootPpid, 0) // signal 0 = probe, no actual signal sent
+    } catch {
+      parentAlive = false // parent PID no longer exists
+    }
+  }
   const orphaned =
-    (process.platform !== 'win32' && process.ppid !== bootPpid) ||
+    !parentAlive ||
     process.stdin.destroyed ||
     process.stdin.readableEnded
-  if (orphaned) shutdown()
+  if (orphaned) {
+    process.stderr.write(`telegram channel: orphan detected (parent ${bootPpid} dead=${!parentAlive}, stdin.destroyed=${process.stdin.destroyed}), shutting down\n`)
+    shutdown()
+  }
 }, 5000).unref()
 
 // Commands are DM-only. Responding in groups would: (1) leak pairing codes via
