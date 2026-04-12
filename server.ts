@@ -20,6 +20,7 @@ import { Bot, GrammyError, InlineKeyboard, InputFile, type Context } from 'gramm
 import type { ReactionTypeEmoji } from 'grammy/types'
 import { randomBytes } from 'crypto'
 import { readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync, statSync, renameSync, realpathSync, chmodSync } from 'fs'
+import { execSync } from 'child_process'
 import { homedir } from 'os'
 import { join, extname, sep } from 'path'
 
@@ -85,6 +86,32 @@ const PERMISSION_REPLY_RE = /^\s*(y|yes|n|no)\s+([a-km-z]{5})\s*$/i
 
 const bot = new Bot(TOKEN)
 let botUsername = ''
+
+// ── tmux fallback for permission responses ─────────────────────────
+// When MCP notification fails to reach CC (or CC doesn't react), try
+// typing the response directly into the tmux pane where CC is running.
+// Derives tmux session name from TELEGRAM_STATE_DIR (telegram-$BOT_NAME → bot-$BOT_NAME).
+function getTmuxSession(): string | null {
+  const stateDir = process.env.TELEGRAM_STATE_DIR
+  if (!stateDir) return null
+  const dirName = stateDir.split('/').pop() ?? ''
+  const m = /^telegram-(.+)$/.exec(dirName)
+  return m ? `bot-${m[1]}` : null
+}
+
+function tmuxSendPermission(behavior: 'allow' | 'deny'): boolean {
+  const session = getTmuxSession()
+  if (!session) return false
+  const key = behavior === 'allow' ? 'y' : 'n'
+  try {
+    execSync(`tmux send-keys -t "${session}" "${key}" Enter`, { timeout: 3000, stdio: 'ignore' })
+    process.stderr.write(`tmux fallback: sent "${key}" to session "${session}"\n`)
+    return true
+  } catch (err) {
+    process.stderr.write(`tmux fallback failed for session "${session}": ${err}\n`)
+    return false
+  }
+}
 
 // ── Typing heartbeat ───────────────────────────────────────────────
 // Tracks per-chat typing heartbeat intervals so they can be cancelled when Claude replies.
@@ -865,6 +892,12 @@ bot.on('callback_query:data', async ctx => {
       if (attempt < 2) await new Promise(r => setTimeout(r, 500))
     }
   }
+  // Always also try tmux send-keys as belt-and-suspenders.
+  // MCP notification may succeed at transport level but CC may not act on it
+  // (e.g. if CC's permission listener has timed out internally).
+  // tmux send-keys types directly into the terminal prompt — works regardless.
+  const tmuxOk = tmuxSendPermission(behavior as 'allow' | 'deny')
+  if (!sent && tmuxOk) sent = true
   pendingPermissions.delete(request_id)
   // Stop retry timer for this permission request
   const retryTimer = permissionRetryTimers.get(request_id)
@@ -873,7 +906,7 @@ bot.on('callback_query:data', async ctx => {
     permissionRetryTimers.delete(request_id)
   }
   const label = behavior === 'allow' ? '✅ Allowed' : '❌ Denied'
-  const status = sent ? label : `${label} (⚠️ failed to reach CLI — try allowing in terminal)`
+  const status = sent ? label : `${label} (⚠️ delivery failed)`
   await ctx.answerCallbackQuery({ text: status }).catch(() => {})
   // Replace buttons with the outcome so the same request can't be answered
   // twice and the chat history shows what was chosen.
@@ -1041,6 +1074,9 @@ async function handleInbound(
         if (attempt < 2) await new Promise(r => setTimeout(r, 500))
       }
     }
+    // Always also try tmux send-keys as belt-and-suspenders.
+    const tmuxOk = tmuxSendPermission(permBehavior as 'allow' | 'deny')
+    if (!permSent && tmuxOk) permSent = true
     pendingPermissions.delete(permReqId)
     const permRetry = permissionRetryTimers.get(permReqId)
     if (permRetry) {
@@ -1056,7 +1092,7 @@ async function handleInbound(
       ]).catch(() => {})
     }
     if (!permSent) {
-      void bot.api.sendMessage(chat_id, '⚠️ Failed to send permission response to CLI. Try allowing in terminal.').catch(() => {})
+      void bot.api.sendMessage(chat_id, '⚠️ Permission response delivery failed.').catch(() => {})
     }
     return
   }
