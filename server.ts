@@ -51,6 +51,22 @@ if (!TOKEN) {
   process.exit(1)
 }
 const INBOX_DIR = join(STATE_DIR, 'inbox')
+const PID_FILE = join(STATE_DIR, 'bot.pid')
+
+// Telegram allows exactly one getUpdates consumer per token. If a previous
+// session crashed (SIGKILL, terminal closed) its server.ts grandchild can
+// survive as an orphan and hold the slot forever, so every new session sees
+// 409 Conflict. Kill any stale holder before we start polling.
+mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 })
+try {
+  const stale = parseInt(readFileSync(PID_FILE, 'utf8'), 10)
+  if (stale > 1 && stale !== process.pid) {
+    process.kill(stale, 0)
+    process.stderr.write(`telegram channel: replacing stale poller pid=${stale}\n`)
+    process.kill(stale, 'SIGTERM')
+  }
+} catch {}
+writeFileSync(PID_FILE, String(process.pid))
 
 // Last-resort safety net — without these the process dies silently on any
 // unhandled promise rejection. With them it logs and keeps serving tools.
@@ -70,39 +86,30 @@ const PERMISSION_REPLY_RE = /^\s*(y|yes|n|no)\s+([a-km-z]{5})\s*$/i
 const bot = new Bot(TOKEN)
 let botUsername = ''
 
+// ── Typing heartbeat ───────────────────────────────────────────────
 // Tracks per-chat typing heartbeat intervals so they can be cancelled when Claude replies.
 const activeTyping = new Map<string, ReturnType<typeof setInterval>>()
 
 // Middleware: start typing heartbeat for every allowed inbound message.
-// Matches OpenClaw's approach: 3s keepalive (Telegram TTL is 5s).
+// 3s keepalive (Telegram TTL is 5s).
 bot.use(async (ctx, next) => {
   const chatId = ctx.chat?.id
   if (chatId) {
     const cid = String(chatId)
-    // Clear any existing heartbeat for this chat first
     const existing = activeTyping.get(cid)
     if (existing) clearInterval(existing)
-    // Fire immediately
-    process.stderr.write(`telegram typing: starting heartbeat for chat ${cid}\n`)
-    void bot.api.sendChatAction(cid, 'typing').catch(e => {
-      process.stderr.write(`telegram typing: initial sendChatAction failed: ${e}\n`)
-    })
-    // 3s keepalive (OpenClaw uses 3s, Telegram TTL is 5s)
+    void bot.api.sendChatAction(cid, 'typing').catch(() => {})
     const interval = setInterval(() => {
-      process.stderr.write(`telegram typing: heartbeat tick for chat ${cid}\n`)
-      void bot.api.sendChatAction(cid, 'typing').catch(e => {
-        process.stderr.write(`telegram typing: heartbeat sendChatAction failed: ${e}\n`)
-      })
+      void bot.api.sendChatAction(cid, 'typing').catch(() => {})
     }, 3000)
-    interval.unref()  // Don't prevent process exit
+    interval.unref()
     activeTyping.set(cid, interval)
-    // Safety: auto-clear after 10 minutes (prevent leaked intervals)
+    // Safety: auto-clear after 10 minutes
     const safety = setTimeout(() => {
       const t = activeTyping.get(cid)
       if (t === interval) {
         clearInterval(interval)
         activeTyping.delete(cid)
-        process.stderr.write(`telegram typing: safety timeout cleared heartbeat for chat ${cid}\n`)
       }
     }, 600_000)
     safety.unref()
@@ -421,6 +428,8 @@ const mcp = new Server(
 
 // Stores full permission details for "See more" expansion keyed by request_id.
 const pendingPermissions = new Map<string, { tool_name: string; description: string; input_preview: string }>()
+// Tracks retry intervals for unanswered permission requests.
+const permissionRetryTimers = new Map<string, ReturnType<typeof setInterval>>()
 
 // Receive permission_request from CC → format → send to all allowlisted DMs.
 // Groups are intentionally excluded — the security thread resolution was
@@ -450,6 +459,26 @@ mcp.setNotificationHandler(
         process.stderr.write(`permission_request send to ${chat_id} failed: ${e}\n`)
       })
     }
+    // Retry: resend permission request every 10s until answered (max 5 min).
+    let retryCount = 0
+    const maxRetries = 30 // 30 * 10s = 5 min
+    const retryInterval = setInterval(() => {
+      retryCount++
+      if (!pendingPermissions.has(request_id) || retryCount >= maxRetries) {
+        clearInterval(retryInterval)
+        permissionRetryTimers.delete(request_id)
+        return
+      }
+      const retryText = `🔐 [Reminder #${retryCount}] Permission: ${tool_name}`
+      const retryAccess = loadAccess()
+      for (const chat_id of retryAccess.allowFrom) {
+        void bot.api.sendMessage(chat_id, retryText, { reply_markup: keyboard }).catch(e => {
+          process.stderr.write(`permission_request retry to ${chat_id} failed: ${e}\n`)
+        })
+      }
+    }, 10000)
+    retryInterval.unref()
+    permissionRetryTimers.set(request_id, retryInterval)
   },
 )
 
@@ -668,6 +697,9 @@ function shutdown(): void {
   if (shuttingDown) return
   shuttingDown = true
   process.stderr.write('telegram channel: shutting down\n')
+  try {
+    if (parseInt(readFileSync(PID_FILE, 'utf8'), 10) === process.pid) rmSync(PID_FILE)
+  } catch {}
   // bot.stop() signals the poll loop to end; the current getUpdates request
   // may take up to its long-poll timeout to return. Force-exit after 2s.
   setTimeout(() => process.exit(0), 2000)
@@ -677,6 +709,19 @@ process.stdin.on('end', shutdown)
 process.stdin.on('close', shutdown)
 process.on('SIGTERM', shutdown)
 process.on('SIGINT', shutdown)
+process.on('SIGHUP', shutdown)
+
+// Orphan watchdog: stdin events above don't reliably fire when the parent
+// chain (`bun run` wrapper → shell → us) is severed by a crash. Poll for
+// reparenting (POSIX) or a dead stdin pipe and self-terminate.
+const bootPpid = process.ppid
+setInterval(() => {
+  const orphaned =
+    (process.platform !== 'win32' && process.ppid !== bootPpid) ||
+    process.stdin.destroyed ||
+    process.stdin.readableEnded
+  if (orphaned) shutdown()
+}, 5000).unref()
 
 // Commands are DM-only. Responding in groups would: (1) leak pairing codes via
 // /status to other group members, (2) confirm bot presence in non-allowlisted
@@ -783,6 +828,12 @@ bot.on('callback_query:data', async ctx => {
     params: { request_id, behavior },
   })
   pendingPermissions.delete(request_id)
+  // Stop retry timer for this permission request
+  const retryTimer = permissionRetryTimers.get(request_id)
+  if (retryTimer) {
+    clearInterval(retryTimer)
+    permissionRetryTimers.delete(request_id)
+  }
   const label = behavior === 'allow' ? '✅ Allowed' : '❌ Denied'
   await ctx.answerCallbackQuery({ text: label }).catch(() => {})
   // Replace buttons with the outcome so the same request can't be answered
@@ -935,13 +986,20 @@ async function handleInbound(
   // (non-allowlisted senders were dropped above), so we trust the reply.
   const permMatch = PERMISSION_REPLY_RE.exec(text)
   if (permMatch) {
+    const permReqId = permMatch[2]!.toLowerCase()
     void mcp.notification({
       method: 'notifications/claude/channel/permission',
       params: {
-        request_id: permMatch[2]!.toLowerCase(),
+        request_id: permReqId,
         behavior: permMatch[1]!.toLowerCase().startsWith('y') ? 'allow' : 'deny',
       },
     })
+    pendingPermissions.delete(permReqId)
+    const permRetry = permissionRetryTimers.get(permReqId)
+    if (permRetry) {
+      clearInterval(permRetry)
+      permissionRetryTimers.delete(permReqId)
+    }
     if (msgId != null) {
       const emoji = permMatch[1]!.toLowerCase().startsWith('y') ? '✅' : '❌'
       void bot.api.setMessageReaction(chat_id, msgId, [
@@ -1021,7 +1079,15 @@ void (async () => {
       })
       return // bot.stop() was called — clean exit from the loop
     } catch (err) {
+      if (shuttingDown) return
       if (err instanceof GrammyError && err.error_code === 409) {
+        if (attempt >= 8) {
+          process.stderr.write(
+            `telegram channel: 409 Conflict persists after ${attempt} attempts — ` +
+            `another poller is holding the bot token (stray 'bun server.ts' process or a second session). Exiting.\n`,
+          )
+          return
+        }
         const delay = Math.min(1000 * attempt, 15000)
         const detail = attempt === 1
           ? ' — another instance is polling (zombie session, or a second Claude Code running?)'
