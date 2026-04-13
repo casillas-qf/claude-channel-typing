@@ -80,10 +80,13 @@ print('Assigned to $role')
 import json, time
 with open('$ACTIVE_FILE', 'r') as f:
     d = json.load(f)
+# Append to discussion log (multi-round)
+log = d.setdefault('discussion_log', [])
+log.append({'role': '$role', 'text': '''$response''', 'ts': time.time()})
+# Also update latest response for this role
 d['responses']['$role'] = '''$response'''
 if '$role' in d.get('assignments', {}):
     d['assignments']['$role']['status'] = 'done'
-    d['assignments']['$role']['completed_at'] = time.time()
 with open('$ACTIVE_FILE', 'w') as f:
     json.dump(d, f, indent=2, ensure_ascii=False)
     f.write('\n')
@@ -130,10 +133,19 @@ with open('$ACTIVE_FILE', 'r') as f:
 print(f'Topic: {d[\"topic\"]}')
 if d.get('decomposition'):
     print(f'\nDecomposition:\n{d[\"decomposition\"]}')
-for role, resp in d.get('responses', {}).items():
-    if resp:
-        print(f'\n--- {role} ---')
-        print(resp)
+# Show full discussion log (multi-round)
+log = d.get('discussion_log', [])
+if log:
+    print('\n=== 讨论记录 ===')
+    for entry in log:
+        print(f'\n【{entry[\"role\"]}】')
+        print(entry['text'])
+else:
+    # Fallback: show responses dict
+    for role, resp in d.get('responses', {}).items():
+        if resp:
+            print(f'\n--- {role} ---')
+            print(resp)
 "
     ;;
 
@@ -185,8 +197,54 @@ ${message}"
     echo "Dispatched to $role"
     ;;
 
+  relay)
+    # Relay a message from one expert to another (for cross-discussion)
+    from_role="$2"
+    to_role="$3"
+    message="$4"
+    session=$(get_tmux_session "$to_role")
+    from_label=$(get_label "$from_role")
+
+    # Write to file to avoid tmux length limits
+    relay_file="$DISCUSSION_DIR/relay-${to_role}.txt"
+    echo "来自 ${from_label} 的回复：" > "$relay_file"
+    echo "" >> "$relay_file"
+    echo "$message" >> "$relay_file"
+
+    tmux send-keys -t "$session" "[DISCUSSION_REPLY] ${from_role} 回复了你，请阅读 $relay_file 并考虑是否回应" Enter 2>/dev/null
+    echo "Relayed from $from_role to $to_role"
+    ;;
+
+  broadcast)
+    # Broadcast a message from one expert to ALL other experts
+    from_role="$2"
+    message="$3"
+    from_label=$(get_label "$from_role")
+
+    for role in orchestrator engineer product critic; do
+      if [ "$role" != "$from_role" ]; then
+        session=$(get_tmux_session "$role")
+        relay_file="$DISCUSSION_DIR/relay-${role}.txt"
+        echo "来自 ${from_label} 的发言：" > "$relay_file"
+        echo "" >> "$relay_file"
+        echo "$message" >> "$relay_file"
+        tmux send-keys -t "$session" "[DISCUSSION_REPLY] ${from_role} 发言了，请阅读 $relay_file 考虑是否回应（如果没有新观点可以不回复）" Enter 2>/dev/null
+      fi
+    done
+    echo "Broadcast from $from_role to all others"
+    ;;
+
+  stop)
+    # Orchestrator signals discussion should end
+    for role in engineer product critic; do
+      session=$(get_tmux_session "$role")
+      tmux send-keys -t "$session" "[DISCUSSION_END] 主持人已结束讨论，不需要再回复" Enter 2>/dev/null
+    done
+    echo "Stop signal sent to all experts"
+    ;;
+
   clear)
-    rm -f "$ACTIVE_FILE" "$DISCUSSION_DIR"/task-*.txt
+    rm -f "$ACTIVE_FILE" "$DISCUSSION_DIR"/task-*.txt "$DISCUSSION_DIR"/relay-*.txt
     echo "Discussion cleared"
     ;;
 
