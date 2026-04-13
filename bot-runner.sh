@@ -99,6 +99,57 @@ auto_accept_trust() {
   done
 }
 
+# Inject recent chat history into the fresh CC session
+inject_history() {
+  local session="bot-$BOT_NAME"
+  local channel_name="telegram-$BOT_NAME"
+  local db_script="$HOME/.claude/channel-history/db.js"
+
+  # Wait for CC to be ready (Listening)
+  for i in $(seq 1 20); do
+    sleep 1
+    if tmux capture-pane -t "$session" -p 2>/dev/null | grep -q "Listening for channel"; then
+      break
+    fi
+  done
+
+  # Find the most common chat_id for this channel
+  local chat_id
+  chat_id=$(node "$db_script" channels 2>/dev/null | python3 -c "
+import sys,json
+try:
+    channels = json.load(sys.stdin)
+    for c in channels:
+        if c.get('channel') == '$channel_name':
+            print(c['chat_id'])
+            break
+except:
+    pass
+" 2>/dev/null)
+
+  if [ -z "$chat_id" ]; then
+    echo -e "${YELLOW}[bot-runner] No chat history found for $channel_name${NC}"
+    return
+  fi
+
+  # Get recent context (last 6 hours, max 20 messages)
+  local context
+  context=$(node "$db_script" context "$channel_name" "$chat_id" 6 2>/dev/null)
+
+  if [ -z "$context" ]; then
+    echo -e "${YELLOW}[bot-runner] No recent context to inject${NC}"
+    return
+  fi
+
+  # Write context to a temp file (avoid tmux length limits)
+  local ctx_file="$HOME/.claude/discussion/startup-context-${BOT_NAME}.txt"
+  echo "$context" > "$ctx_file"
+
+  # Inject into CC session
+  tmux send-keys -t "$session" "请阅读 $ctx_file 获取最近的聊天记录上下文（这是你上一个 session 的对话历史，帮助你恢复上下文）" Enter 2>/dev/null
+  echo -e "${GREEN}[bot-runner] Injected chat history ($(echo "$context" | wc -l | tr -d ' ') lines)${NC}"
+}
+
 # Main loop
 echo -e "${GREEN}============================================${NC}"
 echo -e "${GREEN}  Bot Runner: $BOT_NAME${NC}"
@@ -133,19 +184,23 @@ while true; do
   cd "$BOT_WORKDIR"
   CLAUDE_ARGS="--channels plugin:telegram@claude-plugins-official"
 
-  # Start trust auto-accepter in background
+  # Start trust auto-accepter + history injector in background
   auto_accept_trust &
   TRUST_PID=$!
+  inject_history &
+  INJECT_PID=$!
 
   # Always start fresh — --continue with --channels causes stale plugin state
   # (MCP server marked as failed from previous session) and duplicate bun processes.
   # Each bot's workdir is isolated, so no valuable conversation state is lost.
+  # Chat history is injected from SQLite on startup to restore context.
   echo -e "${GREEN}[bot-runner] claude $CLAUDE_ARGS (workdir: $BOT_WORKDIR)${NC}"
   claude $CLAUDE_ARGS
   EXIT_CODE=$?
 
-  # Clean up trust accepter
+  # Clean up background tasks
   kill $TRUST_PID 2>/dev/null
+  kill $INJECT_PID 2>/dev/null
 
   echo -e "${YELLOW}[bot-runner] Claude exited with code $EXIT_CODE${NC}"
 
