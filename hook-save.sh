@@ -17,9 +17,9 @@ fi
 if [ "$TOOL_NAME" = "mcp__plugin_telegram_telegram__reply" ]; then
   CHAT_ID=$(echo "$INPUT" | jq -r '.tool_input.chat_id // empty')
   TEXT=$(echo "$INPUT" | jq -r '.tool_input.text // empty')
-  # Extract message_id from tool_result: "sent (id: 3150)"
-  TOOL_RESULT=$(echo "$INPUT" | jq -r '.tool_result // empty')
-  MSG_ID=$(echo "$TOOL_RESULT" | sed -n 's/.*id: \([0-9]*\).*/\1/p')
+  # Extract message_id from tool_response: [{"type":"text","text":"sent (id: 3150)"}]
+  TOOL_RESPONSE=$(echo "$INPUT" | jq -r '.tool_response[0].text // empty')
+  MSG_ID=$(echo "$TOOL_RESPONSE" | sed -n 's/.*id: \([0-9]*\).*/\1/p')
 
   if [ -n "$CHAT_ID" ] && [ -n "$TEXT" ]; then
     echo "{
