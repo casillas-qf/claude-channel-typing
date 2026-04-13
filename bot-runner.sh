@@ -132,9 +132,18 @@ except:
     return
   fi
 
-  # Get recent context (last 6 hours, max 20 messages)
+  # Get recent 30 messages (count-based, not time-based)
   local context
-  context=$(node "$db_script" context "$channel_name" "$chat_id" 6 2>/dev/null)
+  context=$(node "$db_script" recent "$channel_name" "$chat_id" 30 2>/dev/null | python3 -c "
+import sys,json
+msgs = json.load(sys.stdin)
+for m in msgs:
+    role = '[Assistant]' if m['role'] == 'assistant' else f'[{m.get(\"user_name\",\"User\")}]'
+    ts = m['timestamp'][:16].replace('T',' ')
+    mid = f' (msg_id:{m[\"message_id\"]})' if m.get('message_id') else ''
+    print(f'{ts} {role}{mid}: {m[\"content\"]}')
+    print()
+" 2>/dev/null)
 
   if [ -z "$context" ]; then
     echo -e "${YELLOW}[bot-runner] No recent context to inject${NC}"
