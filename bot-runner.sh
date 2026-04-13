@@ -132,11 +132,27 @@ except:
     return
   fi
 
-  # Get recent 30 messages (count-based, not time-based)
+  # Get recent messages: max(last 6 hours, last 30 messages)
   local context
-  context=$(node "$db_script" recent "$channel_name" "$chat_id" 30 2>/dev/null | python3 -c "
-import sys,json
-msgs = json.load(sys.stdin)
+  context=$(python3 -c "
+import subprocess, json
+
+def get_msgs(cmd):
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    return json.loads(r.stdout) if r.returncode == 0 and r.stdout.strip() else []
+
+# Get last 30 messages (count-based)
+by_count = get_msgs(['node', '$db_script', 'recent', '$channel_name', '$chat_id', '30'])
+
+# Get last 6 hours (time-based, up to 200)
+by_time = get_msgs(['node', '$db_script', 'recent', '$channel_name', '$chat_id', '200'])
+from datetime import datetime, timedelta, timezone
+cutoff = (datetime.now(timezone.utc) - timedelta(hours=6)).isoformat()
+by_time = [m for m in by_time if m.get('timestamp','') > cutoff]
+
+# Take whichever has more
+msgs = by_time if len(by_time) > len(by_count) else by_count
+
 for m in msgs:
     role = '[Assistant]' if m['role'] == 'assistant' else f'[{m.get(\"user_name\",\"User\")}]'
     ts = m['timestamp'][:16].replace('T',' ')
