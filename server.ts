@@ -1199,12 +1199,25 @@ async function handleInbound(
 
   const imagePath = downloadImage ? await downloadImage() : undefined
 
+  // If user quoted/replied to a message, extract the quoted content
+  const replyMsg = ctx.message?.reply_to_message
+  const quotedText = replyMsg?.text ?? replyMsg?.caption ?? ''
+  const quotedFrom = replyMsg?.from?.username ?? (replyMsg?.from?.id ? String(replyMsg.from.id) : '')
+  const quotedMsgId = replyMsg?.message_id
+
+  // Prepend quoted content to the message text so CC can see what was referenced
+  let fullText = text
+  if (quotedText) {
+    fullText = `[引用 ${quotedFrom} 的消息 (msg_id:${quotedMsgId})]: ${quotedText}\n\n${text}`
+  }
+
   const meta: Record<string, string> = {
     chat_id,
     ...(msgId != null ? { message_id: String(msgId) } : {}),
     user: from.username ?? String(from.id),
     user_id: String(from.id),
     ts: new Date((ctx.message?.date ?? 0) * 1000).toISOString(),
+    ...(quotedMsgId != null ? { reply_to_message_id: String(quotedMsgId) } : {}),
     ...(imagePath ? { image_path: imagePath } : {}),
     ...(attachment ? {
       attachment_kind: attachment.kind,
@@ -1229,7 +1242,7 @@ async function handleInbound(
       const timer = setTimeout(() => {
         discussionTimers.delete(groupId)
         const ctx_msgs = groupContextBuffer.get(groupId) ?? []
-        deliverToCC(text, meta, ctx_msgs)
+        deliverToCC(fullText, meta, ctx_msgs)
         // Clear the buffer after delivery
         groupContextBuffer.delete(groupId)
       }, delay * 1000)
@@ -1242,7 +1255,7 @@ async function handleInbound(
 
   // Immediate delivery (DM, moderator, or no delay configured)
   const contextMsgs = groupContextBuffer.get(chat_id)
-  deliverToCC(text, meta, contextMsgs)
+  deliverToCC(fullText, meta, contextMsgs)
   if (contextMsgs) groupContextBuffer.delete(chat_id)
 }
 
