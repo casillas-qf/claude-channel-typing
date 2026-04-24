@@ -105,10 +105,13 @@ inject_history() {
   local channel_name="telegram-$BOT_NAME"
   local db_script="$HOME/.claude/channel-history/db.js"
 
-  # Wait for CC to be ready (Listening)
-  for i in $(seq 1 20); do
+  # Wait for CC to be ready (❯ prompt visible, not just Listening)
+  for i in $(seq 1 30); do
     sleep 1
-    if tmux capture-pane -t "$session" -p 2>/dev/null | grep -q "Listening for channel"; then
+    if tmux capture-pane -t "$session" -p 2>/dev/null | grep -q "❯"; then
+      # Extra settle time — the prompt may appear before input is truly ready.
+      # 5s is needed because plugins and hooks may inject messages at startup.
+      sleep 5
       break
     fi
   done
@@ -170,9 +173,36 @@ for m in msgs:
   local ctx_file="$HOME/.claude/discussion/startup-context-${BOT_NAME}.txt"
   echo "$context" > "$ctx_file"
 
-  # Inject into CC session
-  tmux send-keys -t "$session" "请阅读 $ctx_file 获取最近的聊天记录上下文（这是你上一个 session 的对话历史，帮助你恢复上下文）" Enter 2>/dev/null
+  # Inject into CC session with retry — sometimes the first Enter is swallowed
+  local inject_msg="请阅读 $ctx_file 获取最近的聊天记录上下文（这是你上一个 session 的对话历史，帮助你恢复上下文）"
+  tmux send-keys -t "$session" "$inject_msg" Enter 2>/dev/null
   echo -e "${GREEN}[bot-runner] Injected chat history ($(echo "$context" | wc -l | tr -d ' ') lines)${NC}"
+
+  # Verify the prompt was accepted (look for processing indicators within 10s)
+  local accepted=false
+  for i in $(seq 1 10); do
+    sleep 1
+    local pane_content
+    pane_content=$(tmux capture-pane -t "$session" -p 2>/dev/null)
+    if echo "$pane_content" | grep -qE "Reading|Wrangling|Smooshing|Baking|Cooked|Sautéed|esc to interrupt"; then
+      accepted=true
+      break
+    fi
+  done
+
+  if [ "$accepted" = false ]; then
+    echo -e "${YELLOW}[bot-runner] Prompt may not have been accepted, retrying...${NC}"
+    # The text might be sitting at the prompt without Enter — send Enter again
+    tmux send-keys -t "$session" Enter 2>/dev/null
+    sleep 2
+    # If still nothing, re-send the full message
+    local pane_after
+    pane_after=$(tmux capture-pane -t "$session" -p 2>/dev/null)
+    if ! echo "$pane_after" | grep -qE "Reading|Wrangling|Smooshing|Baking|Cooked|Sautéed|esc to interrupt"; then
+      echo -e "${YELLOW}[bot-runner] Re-sending injection prompt...${NC}"
+      tmux send-keys -t "$session" "$inject_msg" Enter 2>/dev/null
+    fi
+  fi
 }
 
 # Main loop
