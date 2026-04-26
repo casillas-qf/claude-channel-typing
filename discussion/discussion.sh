@@ -35,6 +35,35 @@ get_label() {
   python3 -c "import json; c=json.load(open('$CONFIG_FILE')); print(c['bots']['$role']['label'])"
 }
 
+# Send a message to a tmux session with verification and retry.
+# Sometimes tmux send-keys Enter is swallowed when claude's prompt isn't ready.
+tmux_send_verified() {
+  local session="$1"
+  local message="$2"
+
+  tmux send-keys -t "$session" "$message" Enter 2>/dev/null
+
+  # Verify the prompt was accepted (look for processing indicators within 8s)
+  local accepted=false
+  for i in $(seq 1 8); do
+    sleep 1
+    if tmux capture-pane -t "$session" -p 2>/dev/null | grep -qE "Reading|Wrangling|Smooshing|Baking|Cooked|Sautéed|esc to interrupt|Zesting|Herding|Cogitat|Fiddle|Churning"; then
+      accepted=true
+      break
+    fi
+  done
+
+  if [ "$accepted" = false ]; then
+    # Retry: send Enter in case text is sitting at prompt
+    tmux send-keys -t "$session" Enter 2>/dev/null
+    sleep 2
+    if ! tmux capture-pane -t "$session" -p 2>/dev/null | grep -qE "Reading|Wrangling|Smooshing|Baking|Cooked|Sautéed|esc to interrupt|Zesting|Herding|Cogitat|Fiddle|Churning"; then
+      # Last resort: re-send full message
+      tmux send-keys -t "$session" "$message" Enter 2>/dev/null
+    fi
+  fi
+}
+
 case "${1:-}" in
   init)
     # Initialize a new discussion
@@ -170,9 +199,8 @@ ${message}"
     role="$2"
     message="${3:-$role completed}"
     session=$(get_tmux_session "orchestrator")
-    # Use tmux send-keys to notify orchestrator
-    # Escape special characters for tmux
-    tmux send-keys -t "$session" "[EXPERT_DONE] $role: $message" Enter 2>/dev/null
+    # Use tmux send-keys to notify orchestrator (with verification)
+    tmux_send_verified "$session" "[EXPERT_DONE] $role: $message"
     echo "Notified orchestrator"
     ;;
 
@@ -192,8 +220,8 @@ ${message}"
       echo "$context" >> "$task_file"
     fi
 
-    # Send compact command to expert via tmux
-    tmux send-keys -t "$session" "[DISCUSSION] 请阅读 $task_file 获取你的任务，完成后用 discussion.sh 发送结果" Enter 2>/dev/null
+    # Send compact command to expert via tmux (with verification)
+    tmux_send_verified "$session" "[DISCUSSION] 请阅读 $task_file 获取你的任务，完成后用 discussion.sh 发送结果"
     echo "Dispatched to $role"
     ;;
 
@@ -211,7 +239,7 @@ ${message}"
     echo "" >> "$relay_file"
     echo "$message" >> "$relay_file"
 
-    tmux send-keys -t "$session" "[DISCUSSION_REPLY] ${from_role} 回复了你，请阅读 $relay_file 并考虑是否回应" Enter 2>/dev/null
+    tmux_send_verified "$session" "[DISCUSSION_REPLY] ${from_role} 回复了你，请阅读 $relay_file 并考虑是否回应"
     echo "Relayed from $from_role to $to_role"
     ;;
 
@@ -228,7 +256,7 @@ ${message}"
         echo "来自 ${from_label} 的发言：" > "$relay_file"
         echo "" >> "$relay_file"
         echo "$message" >> "$relay_file"
-        tmux send-keys -t "$session" "[DISCUSSION_REPLY] ${from_role} 发言了，请阅读 $relay_file 考虑是否回应（如果没有新观点可以不回复）" Enter 2>/dev/null
+        tmux_send_verified "$session" "[DISCUSSION_REPLY] ${from_role} 发言了，请阅读 $relay_file 考虑是否回应（如果没有新观点可以不回复）"
       fi
     done
     echo "Broadcast from $from_role to all others"
@@ -238,7 +266,7 @@ ${message}"
     # Orchestrator signals discussion should end
     for role in engineer product critic; do
       session=$(get_tmux_session "$role")
-      tmux send-keys -t "$session" "[DISCUSSION_END] 主持人已结束讨论，不需要再回复" Enter 2>/dev/null
+      tmux_send_verified "$session" "[DISCUSSION_END] 主持人已结束讨论，不需要再回复"
     done
     echo "Stop signal sent to all experts"
     ;;
