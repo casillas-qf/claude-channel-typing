@@ -188,11 +188,65 @@ else:
     full_message="【${label}】
 
 ${message}"
-    # Send with rate limit protection (simple: just don't send more than 1/sec)
-    curl -s "https://api.telegram.org/bot${token}/sendMessage" \
-      -d "chat_id=${group_id}" \
-      --data-urlencode "text=${full_message}" > /dev/null
-    echo "Sent to group as ${label}"
+    # Auto-split long messages (Telegram limit: 4096 chars)
+    # Write to temp file to avoid shell escaping issues
+    local msg_file
+    msg_file=$(mktemp)
+    printf '%s' "$full_message" > "$msg_file"
+    python3 - "$msg_file" "$token" "$group_id" <<'PYEOF'
+import subprocess, sys, json, time, os
+
+msg_file, token, group_id = sys.argv[1], sys.argv[2], sys.argv[3]
+with open(msg_file, 'r') as f:
+    text = f.read()
+os.unlink(msg_file)
+
+if not text.strip():
+    sys.exit(0)
+
+MAX_LEN = 3500
+chunks = []
+while len(text) > MAX_LEN:
+    split_at = text.rfind('\n', 0, MAX_LEN)
+    if split_at < MAX_LEN // 2:
+        split_at = MAX_LEN
+    chunks.append(text[:split_at])
+    text = text[split_at:].lstrip('\n')
+if text.strip():
+    chunks.append(text)
+
+total = len(chunks)
+errors = []
+for i, chunk in enumerate(chunks):
+    if total > 1:
+        chunk = f'({i+1}/{total})\n{chunk}' if i > 0 else f'{chunk}\n\n({i+1}/{total})'
+    r = subprocess.run(
+        ['curl', '-s', f'https://api.telegram.org/bot{token}/sendMessage',
+         '-d', f'chat_id={group_id}',
+         '--data-urlencode', f'text={chunk}'],
+        capture_output=True, text=True
+    )
+    try:
+        resp = json.loads(r.stdout)
+        if not resp.get('ok'):
+            errors.append(f'Chunk {i+1}: {resp.get("description", "unknown error")}')
+    except:
+        errors.append(f'Chunk {i+1}: {r.stdout[:200]}')
+    if i < total - 1:
+        time.sleep(1)
+
+if errors:
+    for e in errors:
+        print(f'ERROR: {e}', file=sys.stderr)
+    sys.exit(1)
+else:
+    print(f'Sent {total} chunk(s) to group')
+PYEOF
+    if [ $? -eq 0 ]; then
+      echo "Sent to group as ${label}"
+    else
+      echo "ERROR: Failed to send to group as ${label}" >&2
+    fi
     ;;
 
   notify-orchestrator)
