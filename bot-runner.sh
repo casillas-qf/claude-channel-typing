@@ -173,18 +173,23 @@ for m in msgs:
   local ctx_file="$HOME/.claude/discussion/startup-context-${BOT_NAME}.txt"
   echo "$context" > "$ctx_file"
 
-  # Inject into CC session with retry — sometimes the first Enter is swallowed
+  # Inject into CC session with hash-based verification and retry
   local inject_msg="请阅读 $ctx_file 获取最近的聊天记录上下文（这是你上一个 session 的对话历史，帮助你恢复上下文）"
+
+  # Snapshot pane content before sending
+  local before_hash
+  before_hash=$(tmux capture-pane -t "$session" -p 2>/dev/null | md5 -q 2>/dev/null || tmux capture-pane -t "$session" -p 2>/dev/null | md5sum 2>/dev/null | cut -d' ' -f1)
+
   tmux send-keys -t "$session" "$inject_msg" Enter 2>/dev/null
   echo -e "${GREEN}[bot-runner] Injected chat history ($(echo "$context" | wc -l | tr -d ' ') lines)${NC}"
 
-  # Verify the prompt was accepted (look for processing indicators within 10s)
+  # Verify pane content changed within 10s (means the message was accepted)
   local accepted=false
   for i in $(seq 1 10); do
     sleep 1
-    local pane_content
-    pane_content=$(tmux capture-pane -t "$session" -p 2>/dev/null)
-    if echo "$pane_content" | grep -qE "Reading|Wrangling|Smooshing|Baking|Cooked|Sautéed|esc to interrupt"; then
+    local after_hash
+    after_hash=$(tmux capture-pane -t "$session" -p 2>/dev/null | md5 -q 2>/dev/null || tmux capture-pane -t "$session" -p 2>/dev/null | md5sum 2>/dev/null | cut -d' ' -f1)
+    if [ "$before_hash" != "$after_hash" ]; then
       accepted=true
       break
     fi
@@ -192,13 +197,11 @@ for m in msgs:
 
   if [ "$accepted" = false ]; then
     echo -e "${YELLOW}[bot-runner] Prompt may not have been accepted, retrying...${NC}"
-    # The text might be sitting at the prompt without Enter — send Enter again
     tmux send-keys -t "$session" Enter 2>/dev/null
-    sleep 2
-    # If still nothing, re-send the full message
-    local pane_after
-    pane_after=$(tmux capture-pane -t "$session" -p 2>/dev/null)
-    if ! echo "$pane_after" | grep -qE "Reading|Wrangling|Smooshing|Baking|Cooked|Sautéed|esc to interrupt"; then
+    sleep 3
+    local retry_hash
+    retry_hash=$(tmux capture-pane -t "$session" -p 2>/dev/null | md5 -q 2>/dev/null || tmux capture-pane -t "$session" -p 2>/dev/null | md5sum 2>/dev/null | cut -d' ' -f1)
+    if [ "$before_hash" = "$retry_hash" ]; then
       echo -e "${YELLOW}[bot-runner] Re-sending injection prompt...${NC}"
       tmux send-keys -t "$session" "$inject_msg" Enter 2>/dev/null
     fi

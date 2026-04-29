@@ -36,28 +36,37 @@ get_label() {
 }
 
 # Send a message to a tmux session with verification and retry.
-# Sometimes tmux send-keys Enter is swallowed when claude's prompt isn't ready.
+# Uses pane content hash to detect whether the message was actually accepted,
+# which works even when the bot is already busy (processing indicators already present).
 tmux_send_verified() {
   local session="$1"
   local message="$2"
 
+  # Snapshot pane content before sending (to detect change, not just indicators)
+  local before_hash
+  before_hash=$(tmux capture-pane -t "$session" -p 2>/dev/null | md5 -q 2>/dev/null || tmux capture-pane -t "$session" -p 2>/dev/null | md5sum 2>/dev/null | cut -d' ' -f1)
+
   tmux send-keys -t "$session" "$message" Enter 2>/dev/null
 
-  # Verify the prompt was accepted (look for processing indicators within 8s)
+  # Verify the pane content changed within 10s (means the message was accepted)
   local accepted=false
-  for i in $(seq 1 8); do
+  for i in $(seq 1 10); do
     sleep 1
-    if tmux capture-pane -t "$session" -p 2>/dev/null | grep -qE "Reading|Wrangling|Smooshing|Baking|Cooked|Sautéed|esc to interrupt|Zesting|Herding|Cogitat|Fiddle|Churning"; then
+    local after_hash
+    after_hash=$(tmux capture-pane -t "$session" -p 2>/dev/null | md5 -q 2>/dev/null || tmux capture-pane -t "$session" -p 2>/dev/null | md5sum 2>/dev/null | cut -d' ' -f1)
+    if [ "$before_hash" != "$after_hash" ]; then
       accepted=true
       break
     fi
   done
 
   if [ "$accepted" = false ]; then
-    # Retry: send Enter in case text is sitting at prompt
+    # Retry: send Enter in case text is sitting at prompt without being submitted
     tmux send-keys -t "$session" Enter 2>/dev/null
-    sleep 2
-    if ! tmux capture-pane -t "$session" -p 2>/dev/null | grep -qE "Reading|Wrangling|Smooshing|Baking|Cooked|Sautéed|esc to interrupt|Zesting|Herding|Cogitat|Fiddle|Churning"; then
+    sleep 3
+    local retry_hash
+    retry_hash=$(tmux capture-pane -t "$session" -p 2>/dev/null | md5 -q 2>/dev/null || tmux capture-pane -t "$session" -p 2>/dev/null | md5sum 2>/dev/null | cut -d' ' -f1)
+    if [ "$before_hash" = "$retry_hash" ]; then
       # Last resort: re-send full message
       tmux send-keys -t "$session" "$message" Enter 2>/dev/null
     fi
