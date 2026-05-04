@@ -169,9 +169,26 @@ for m in msgs:
     return
   fi
 
+  # Merge with Nous-distilled context if available.
+  # Contract: Nous writes to ${NOUS_CONTEXT_DIR}/startup-context-${BOT}.txt (env-overridable, default ~/.nous/context).
+  # bot-runner is the only writer of ~/.claude/discussion/ — read-only consumer of Nous output.
+  local nous_ctx_dir="${NOUS_CONTEXT_DIR:-$HOME/.nous/context}"
+  local nous_ctx="$nous_ctx_dir/startup-context-${BOT_NAME}.txt"
+  local merged_context="$context"
+  if [ -f "$nous_ctx" ] && [ -s "$nous_ctx" ]; then
+    merged_context="$(cat "$nous_ctx")
+
+---
+
+## 最近原始对话（SQLite，verbatim）
+
+$context"
+    echo -e "${GREEN}[bot-runner] Merged Nous distilled context from $nous_ctx${NC}"
+  fi
+
   # Write context to a temp file (avoid tmux length limits)
   local ctx_file="$HOME/.claude/discussion/startup-context-${BOT_NAME}.txt"
-  echo "$context" > "$ctx_file"
+  echo "$merged_context" > "$ctx_file"
 
   # Inject into CC session with hash-based verification and retry
   local inject_msg="请阅读 $ctx_file 获取最近的聊天记录上下文（这是你上一个 session 的对话历史，帮助你恢复上下文）"

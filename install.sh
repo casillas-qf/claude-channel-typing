@@ -249,6 +249,33 @@ install_runner() {
     echo "  ERROR: bot-runner.sh not found in $SCRIPT_DIR"
     return 1
   fi
+  bootstrap_nous_integration
+}
+
+# Bootstrap the bot-runner ↔ Nous integration boundary.
+# Idempotent: safe to run on every install. Creates the dirs/configs that bot-runner
+# expects to read from but does not own. Does not modify anything if already correct.
+bootstrap_nous_integration() {
+  echo "[nous-integration] Bootstrapping bot-runner ↔ Nous integration..."
+  local nous_ctx_dir="$HOME/.nous/context"
+  mkdir -p "$nous_ctx_dir"
+  echo "  Nous output dir: $nous_ctx_dir (bot-runner reads from here)"
+
+  # Create cortex.config.json with outputDir override if missing.
+  # Nous's config loader reads ~/.cortex/cortex.config.json (legacy path from BrainCortex era).
+  local cortex_cfg_dir="$HOME/.cortex"
+  local cortex_cfg="$cortex_cfg_dir/cortex.config.json"
+  mkdir -p "$cortex_cfg_dir"
+  if [ ! -f "$cortex_cfg" ]; then
+    cat > "$cortex_cfg" <<EOF
+{
+  "outputDir": "$nous_ctx_dir"
+}
+EOF
+    echo "  Created $cortex_cfg with outputDir override"
+  else
+    echo "  $cortex_cfg already exists (not overwritten — verify outputDir manually)"
+  fi
 }
 
 list_bots() {
