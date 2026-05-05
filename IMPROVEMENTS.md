@@ -78,3 +78,22 @@ ps -e -o pid,ppid,cmd | awk '/bun.*telegram/ && $2==1 {print $1}' | xargs -r kil
 ```
 
 The cleanest reset: kill the bot's tmux session and let `bot-runner.sh` start a fresh one.
+
+### Recurrence (2026-05-05 17:25 BJT) — "post-startup orphan" gap
+
+The same class of bug bit `sanfan-xishen` again, ~2h after the previous fix attempt. New data point:
+
+- Orphan bun PID 97901, PPID=1, etime 2h19m, env `TELEGRAM_STATE_DIR=/root/.claude/channels/telegram-sanfan-xishen`
+- Legitimate bun pair (PID 136602/136607) was alive and well, etime 6m, owned by claude 136556
+- User's message msg_id 3526 ("那就按你说的弄") never reached the LLM context — confirmed dropped
+- Killing 97901 fixed it; 30s observation window after kill showed no respawn
+
+**Why today's fix didn't catch it:** commit 639a10a's stale-poller check runs only **at bun startup**. The legitimate bun (136602) started cleanly when the orphan didn't yet exist. The orphan came into being later — most likely from an earlier claude session that died and left its bun reparented to init. Once the legitimate bun is past startup, nothing in the codebase ever looks for orphans again.
+
+**Refined recommendation, ranked:**
+
+1. **Periodic orphan scan (low-effort interim fix)** — Add a 60s setInterval to bun's main loop: enumerate `/proc/*/environ` for entries matching its own `TELEGRAM_STATE_DIR`, skip self, and if any with PPID=1 found → SIGTERM it. Survives the "post-startup orphan" case. ~15 LoC.
+
+2. **flock-based single instance (proper fix, candidate #1 above)** — Still the right long-term answer; orphans can't acquire the lock so they'd self-exit. But heavier change.
+
+The two are complementary: ship #1 now to stop the bleeding, plan #2 for the next iteration.
