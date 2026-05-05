@@ -826,6 +826,40 @@ setInterval(() => {
   }
 }, 5000).unref()
 
+// Sibling-orphan reaper: scans for bun processes pointing at the same
+// STATE_DIR with PPid=1 (reparented to init = previous session's leftover).
+// The startup-time stale-poller check (lines 60-84) only inspects bot.pid,
+// so an orphan that appears AFTER our boot lives forever and silently
+// steals incoming Telegram updates. See IMPROVEMENTS.md "Recurrence".
+function reapSiblingOrphans(): void {
+  if (process.platform !== 'linux') return
+  let entries: string[]
+  try { entries = readdirSync('/proc') } catch { return }
+  for (const entry of entries) {
+    if (!/^\d+$/.test(entry)) continue
+    const pid = parseInt(entry, 10)
+    if (pid === process.pid) continue
+    try {
+      const comm = readFileSync(`/proc/${pid}/comm`, 'utf8').trim()
+      if (comm !== 'bun') continue
+      const env = readFileSync(`/proc/${pid}/environ`, 'utf8')
+      const stateEntry = env.split('\0').find(e => e.startsWith('TELEGRAM_STATE_DIR='))
+      if (!stateEntry || stateEntry.slice('TELEGRAM_STATE_DIR='.length) !== STATE_DIR) continue
+      const status = readFileSync(`/proc/${pid}/status`, 'utf8')
+      const m = status.match(/^PPid:\s*(\d+)/m)
+      const ppid = m ? parseInt(m[1], 10) : -1
+      if (ppid !== 1) continue
+      process.stderr.write(`telegram channel: reaping sibling orphan bun pid=${pid} (ppid=1, same STATE_DIR)\n`)
+      try { process.kill(pid, 'SIGTERM') } catch {}
+    } catch {}
+  }
+}
+setInterval(reapSiblingOrphans, 60000).unref()
+// Also probe shortly after boot — catches orphans that pre-existed our
+// startup (the boot-time check at lines 60-84 only looks at bot.pid, which
+// the orphan no longer holds once we overwrite it).
+setTimeout(reapSiblingOrphans, 10000).unref()
+
 // Commands are DM-only. Responding in groups would: (1) leak pairing codes via
 // /status to other group members, (2) confirm bot presence in non-allowlisted
 // groups, (3) spam channels the operator never approved. Silent drop matches
