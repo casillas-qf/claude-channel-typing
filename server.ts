@@ -63,8 +63,23 @@ try {
   const stale = parseInt(readFileSync(PID_FILE, 'utf8'), 10)
   if (stale > 1 && stale !== process.pid) {
     process.kill(stale, 0)
-    process.stderr.write(`telegram channel: replacing stale poller pid=${stale}\n`)
-    process.kill(stale, 'SIGTERM')
+    // Only kill if the stale PID is truly orphaned — its parent is gone
+    // (PPid=1 means reparented to init). If parent is alive, this is a
+    // sibling spawn from the same claude session (e.g. claude's MCP
+    // reconnect), and killing it triggers a chain reaction that breaks
+    // both connections.
+    let stalePpid = 0
+    try {
+      const status = readFileSync(`/proc/${stale}/status`, 'utf8')
+      const m = status.match(/^PPid:\s*(\d+)/m)
+      if (m) stalePpid = parseInt(m[1], 10)
+    } catch {}
+    if (stalePpid === 1) {
+      process.stderr.write(`telegram channel: replacing orphan poller pid=${stale} (ppid=1)\n`)
+      process.kill(stale, 'SIGTERM')
+    } else {
+      process.stderr.write(`telegram channel: NOT killing live sibling pid=${stale} (ppid=${stalePpid})\n`)
+    }
   }
 } catch {}
 writeFileSync(PID_FILE, String(process.pid))
@@ -781,11 +796,11 @@ function shutdown(): void {
   setTimeout(() => process.exit(0), 2000)
   void Promise.resolve(bot.stop()).finally(() => process.exit(0))
 }
-process.stdin.on('end', shutdown)
-process.stdin.on('close', shutdown)
-process.on('SIGTERM', shutdown)
-process.on('SIGINT', shutdown)
-process.on('SIGHUP', shutdown)
+process.stdin.on('end', () => { process.stderr.write(`[shutdown-reason] stdin.end\n`); shutdown() })
+process.stdin.on('close', () => { process.stderr.write(`[shutdown-reason] stdin.close\n`); shutdown() })
+process.on('SIGTERM', () => { process.stderr.write(`[shutdown-reason] SIGTERM\n`); shutdown() })
+process.on('SIGINT', () => { process.stderr.write(`[shutdown-reason] SIGINT\n`); shutdown() })
+process.on('SIGHUP', () => { process.stderr.write(`[shutdown-reason] SIGHUP\n`); shutdown() })
 
 // Orphan watchdog: stdin events above don't reliably fire when the parent
 // chain (`bun run` wrapper → shell → us) is severed by a crash.
