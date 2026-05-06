@@ -18,3 +18,15 @@ For interim updates during long-running work, use `edit_message` on a status mes
 `reply_to` is only for threading under a specific older message. Don't use it on the latest message; never guess a message_id.
 
 **Why this rule exists:** 2026-05-05 — user caught a streak of 6+ consecutive transcript-only responses where Telegram showed nothing for ~17 minutes. They called it "very serious." The plugin's own system prompt already says this; the rule is mirrored here as a hard backstop.
+
+## Missing dependencies: install, don't bypass
+
+When a runtime import or shell command fails because a dependency is missing (e.g., `ModuleNotFoundError`, `command not found`), the default action is to **install it**, not to silently work around it.
+
+- Python on this VPS: `pip install --break-system-packages <pkg>` (system Python is PEP 668 managed)
+- Node/Bun: `npm i <pkg>` or `bun add <pkg>` in the project dir
+- Briefly tell the user what you added in your reply ("装了 X 才能读 Y")
+- Only bypass if the install genuinely fails — and then explicitly flag it, don't pretend it worked
+- Exception: confirm first if the install would touch a sensitive system area or has security implications
+
+**Why this rule exists:** 2026-05-06 — origin-qiushen hit `ModuleNotFoundError: pypdf/PyPDF2` reading a user PDF, silently bypassed without telling anyone. User: "以后如果遇到读不了的，就可以自行安装，不要默认绕过." Quietly clipping capabilities makes gaps invisible.
