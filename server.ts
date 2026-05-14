@@ -1250,14 +1250,19 @@ async function handleInbound(
 
   // If user quoted/replied to a message, extract the quoted content
   const replyMsg = ctx.message?.reply_to_message
-  const quotedText = replyMsg?.text ?? replyMsg?.caption ?? ''
+  // Bot API 7.0+: if user selectively highlighted a portion via quote feature,
+  // ctx.message.quote.text contains just that highlight. Prefer it over full reply text.
+  const userQuote = (ctx.message as any)?.quote?.text as string | undefined
+  const quotedText = userQuote ?? replyMsg?.text ?? replyMsg?.caption ?? ''
   const quotedFrom = replyMsg?.from?.username ?? (replyMsg?.from?.id ? String(replyMsg.from.id) : '')
   const quotedMsgId = replyMsg?.message_id
 
-  // Prepend quoted content to the message text so CC can see what was referenced
+  // Prepend quoted content to the message text so CC can see what was referenced.
+  // Tag selectively-highlighted quotes distinctly so CC knows the user is pointing at a specific segment.
   let fullText = text
   if (quotedText) {
-    fullText = `[引用 ${quotedFrom} 的消息 (msg_id:${quotedMsgId})]: ${quotedText}\n\n${text}`
+    const tag = userQuote ? '[引用片段]' : '[引用]'
+    fullText = `${tag} ${quotedFrom} 的消息 (msg_id:${quotedMsgId}): ${quotedText}\n\n${text}`
   }
 
   const meta: Record<string, string> = {
