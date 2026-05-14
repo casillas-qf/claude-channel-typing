@@ -249,7 +249,18 @@ cleanup_children() {
   pkill -P $$ 2>/dev/null  # second pass for stragglers
   echo -e "${GREEN}[bot-runner] Cleanup complete.${NC}"
 }
-trap cleanup_children EXIT SIGTERM SIGINT SIGHUP
+
+# Handle termination signals (SIGHUP from tmux kill-session, SIGINT from Ctrl-C, SIGTERM from kill):
+# Must do cleanup AND explicit exit, otherwise the main while-true loop just restarts claude
+# and bot-runner survives as orphan. Previously trap fired cleanup but didn't exit → ghost bot-runner.
+handle_signal() {
+  echo -e "${YELLOW}[bot-runner] Received termination signal, shutting down cleanly...${NC}"
+  cleanup_children
+  exit 0
+}
+
+trap cleanup_children EXIT
+trap handle_signal SIGTERM SIGINT SIGHUP
 
 while true; do
   RESTART_COUNT=$((RESTART_COUNT + 1))
