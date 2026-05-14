@@ -20,7 +20,7 @@
 set -o pipefail
 
 BOT_NAME="${1:?Usage: bot-runner.sh <bot-name>}"
-CUSTOM_PLUGIN="$HOME/.claude/plugins/custom/telegram-typing/server.ts"
+CUSTOM_PLUGIN="$(cd "$(dirname "$0")" && pwd)/server.ts"
 STATE_DIR="$HOME/.claude/channels/telegram-$BOT_NAME"
 BOT_WORKDIR="$HOME/.claude/bot-workdirs/$BOT_NAME"
 RESTART_COUNT=0
@@ -173,7 +173,7 @@ for m in msgs:
   # Contract: Nous writes to ${NOUS_CONTEXT_DIR}/startup-context-${BOT}.txt (env-overridable, default ~/.nous/context).
   # bot-runner is the only writer of ~/.claude/discussion/ — read-only consumer of Nous output.
   local nous_ctx_dir="${NOUS_CONTEXT_DIR:-$HOME/.nous/context}"
-  local nous_ctx="$nous_ctx_dir/startup-context-telegram-${BOT_NAME}.txt"
+  local nous_ctx="$nous_ctx_dir/startup-context-${BOT_NAME}.txt"
   local merged_context="$context"
   if [ -f "$nous_ctx" ] && [ -s "$nous_ctx" ]; then
     merged_context="$(cat "$nous_ctx")
